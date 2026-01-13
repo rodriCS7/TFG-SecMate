@@ -49,16 +49,16 @@ TU RESPUESTA DEBE SEGUIR ESTE FORMATO EXACTO:
 """
 
 # ==========================================
-# 3. ARQUITECTURA LANGGRAPH (EL CEREBRO)
+# 3. ARQUITECTURA LANGGRAPH
 # ==========================================
 
-# A. Definición del Estado (Memoria Compartida)
+# Definición del Estado (Memoria Compartida)
 # 'messages' guardará todo el historial de la conversación.
 # 'add_messages' asegura que los mensajes nuevos se añadan a la lista, no la sobrescriban.
 class State(TypedDict):
     messages: Annotated[list, add_messages]
 
-# B. Inicialización del Modelo LLM
+# Inicialización del Modelo LLM
 # Usamos Gemini Flash
 # Temperature = 0.3: Baja creatividad para asegurar que siga las reglas de clasificación estrictamente.
 llm = ChatGoogleGenerativeAI(
@@ -67,7 +67,7 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.3, 
 )
 
-# C. Nodo Orquestador
+# Nodo Orquestador
 # Este nodo representa al agente que toma la decisión inicial.
 def orchestrator_node(state: State):
     # Inyectamos el System Prompt al principio del historial para dar contexto al modelo
@@ -79,19 +79,60 @@ def orchestrator_node(state: State):
     # Devolvemos el mensaje nuevo para actualizar el estado
     return {"messages": [response]}
 
-# D. Construcción del Grafo (Flujo de Trabajo)
+# Nodos Workers (de momento es esqueleto)
+def analyst_node(state: State):
+    # Lógica de Virustotal, etc en el futuro
+    print("🔧 Nodo Analyst invocado (pendiente de implementación).")
+    return {"messages": [SystemMessage(content="[SISTEMA] El agente Analista ha recibido la solicitud")]}
+
+def consultant_node(state: State):
+    # Lógica de consulta teórica en el futuro
+    print("🔧 Nodo Consultant invocado (pendiente de implementación).")
+    return {"messages": [SystemMessage(content="[SISTEMA] El agente Consultor ha recibido la solicitud")]}
+
+# Funcion ROUTER
+
+def router(state: State):
+    # Obtenemos el último mensaje (La respuesta del orquestador)
+    last_message = state['messages'][-1].content
+
+    # Buscamos las palabras definidas en el promt del orquestador (TO_ANALYST, TO_CONSULTANT, TO_CHAT)
+    if "TO_ANALYST" in last_message:
+        return "analyst"
+    elif "TO_CONSULTANT" in last_message:
+        return "consultant"
+    else:
+        return END
+
+# Construcción del Grafo (Flujo de Trabajo)
 graph_builder = StateGraph(State)
 
-# Añadimos el nodo al grafo
+# Añadimos todos los nodos
 graph_builder.add_node("orchestrator", orchestrator_node)
+graph_builder.add_node("analyst", analyst_node)
+graph_builder.add_node("consultant", consultant_node)
 
-# Definimos el flujo: Inicio -> Orquestador -> Fin (Por ahora es lineal)
+# Definimos el punto de entrada
 graph_builder.add_edge(START, "orchestrator")
-graph_builder.add_edge("orchestrator", END)
+
+# Añadimos la lógica condicional
+# "Desde el orquestador, ejecuta la función 'router' para decidir a donde ir"
+graph_builder.add_conditional_edges(
+    "orchestrator", # Nodo de origen
+    router, # Funcion que decide
+    {   # posibles caminos: {valor_devuelto: nodo_destino}
+        "analyst": "analyst",
+        "consultant": "consultant",
+        END: END
+    }
+)
+
+# Cerramos los caminos de los workers (no están implementados aún)
+graph_builder.add_edge("analyst", END)
+graph_builder.add_edge("consultant", END)
 
 # Compilamos el grafo para hacerlo ejecutable
 graph = graph_builder.compile()
-
 
 # ==========================================
 # 4. INTERFAZ DE TELEGRAM (LA CAPA DE VISTA)
@@ -147,6 +188,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🤖 SecMate está escuchando y listo para clasificar...")
+    print("🤖 SecMate está escuchando...")
     # Iniciamos el bucle de escucha (Polling)
     app.run_polling()
