@@ -1,4 +1,16 @@
-# Archivo: .gitignore
-__pycache__/
+# Archivos de entorno virtual
 venv/
+.venv/
+env/
+
+# Archivos de configuración de IDE
+.idea/
+.vscode/
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
+
+# CLAVES SECRETAS
 .env
+*.env
