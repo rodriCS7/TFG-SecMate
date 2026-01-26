@@ -18,14 +18,18 @@ from langgraph.graph.message import add_messages
 
 # --- MÓDULOS PROPIOS ---
 # Separación de responsabilidades: Prompts en un lado, Herramientas en otro
-from prompts import ORCHESTRATOR_SYSTEM_PROMPT, ANALYST_SYSTEM_PROMPT
+from prompts import ORCHESTRATOR_SYSTEM_PROMPT, ANALYST_SYSTEM_PROMPT, CONSULTANT_RAG_PROMPT
 from tools import check_hash_vt, extract_hash_from_text
+
+# --- IMPORTS PARA RAG ---
+from langchain_chroma import Chroma
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
 
-# Carga de secretos desde .env para seguridad (evita hardcodear claves)
+# Carga de variables desde .env para seguridad
 load_dotenv('.env')
 google_key = os.getenv('GOOGLE_API_KEY')
 
@@ -50,7 +54,9 @@ llm = ChatGoogleGenerativeAI(
     }
 )
 
+
 # Definición del Estado del Grafo (La "Memoria" del Bot)
+# A mejorar: maneras más eficientes de manejar el historial.
 class State(TypedDict):
     messages: Annotated[list, add_messages] # append-only para mantener historial
 
@@ -124,7 +130,7 @@ def analyst_node(state: State):
         if "error" in vt_data:
              return {"messages": [SystemMessage(content=f"⚠️ Error VirusTotal: {vt_data['error']}")]}
         
-        # 3. Ingeniería de Prompts (RAG Básico): Inyectamos los datos JSON en el prompt
+        # 3. Ingeniería de Prompts: Inyectamos los datos JSON en el prompt
         full_analysis_prompt = f"""
         {ANALYST_SYSTEM_PROMPT}
         --- DATOS TÉCNICOS DEL ANÁLISIS ---
@@ -173,7 +179,7 @@ def analyst_node(state: State):
             total = malicious + vt_data.get('undetected', 0) + vt_data.get('harmless', 0)
             names = ", ".join(vt_data.get('names', ['Desconocido']))
             
-            # Lógica simple de semáforo
+            # Lógica simple
             if malicious > 0:
                 verdict = "⛔ **PELIGROSO**"
                 advice = "Este archivo ha sido detectado como malware. **NO LO ABRAS.**"
@@ -201,11 +207,94 @@ def analyst_node(state: State):
 def consultant_node(state: State):
     """
     NODO CONSULTOR (RAG):
-    Futura implementación para consultas sobre PDFs y teoría.
+    Usa el cliente nativo y desactiva filtros para poder explicar
+    conceptos de ciberseguridad sin censura.
     """
-    print("--- 📚 EJECUTANDO NODO CONSULTOR ---")
-    return {"messages": [SystemMessage(content="[SISTEMA] El agente Consultor ha recibido la solicitud.")]}
+    print("--- 📚 EJECUTANDO NODO CONSULTOR (RAG) ---")
+    
+    # 1. Recuperar pregunta
+    # El grafo de LangGraph pasa un objeto state que contiene todo el historial del chat. 
+    # El código recorre los mensajes de atrás hacia adelante (reversed) para encontrar 
+    # la última pregunta que hizo el usuario.
+    messages = state['messages']
+    user_question = ""
+    for msg in reversed(messages):
+        if msg.type == "human":
+            user_question = msg.content
+            break
+            
+    print(f"   ❓ Pregunta detectada: {user_question}")
 
+    # 2. Conectar a Base de Datos vectorial (Chroma)
+    DB_PATH = "chroma_db"
+    
+    if not os.path.exists(DB_PATH):
+        return {"messages": [SystemMessage(content="⚠️ Error: No encuentro la memoria. Ejecuta 'python ingest.py' primero.")]}
+
+    # Embeddings
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004", 
+        google_api_key=google_key
+    )
+    
+    try:
+        # Conexión a la BBDD vectorial
+        vector_store = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
+        
+        # 3. Retrieval
+        # Convierte la pregunta en un vector y busca los K fragmentos más cerca matemáticamente (más relevantes).
+        results = vector_store.similarity_search(user_question, k=4)
+        # Variable con el contexto extraído del RAG
+        context_text = "\n\n".join([doc.page_content for doc in results])
+        
+        if not context_text:
+            return {"messages": [SystemMessage(content="Lo siento, no encuentro información sobre eso en tus apuntes.")]}
+
+        print("   📖 Contexto recuperado.")
+
+        # 4. Prompt 
+        # Context Injection: Inyectamos contexto y pregunta en el prompt RAG
+        rag_prompt = CONSULTANT_RAG_PROMPT.format(
+            context_text=context_text,
+            user_question=user_question
+        )
+
+        # 5. GENERACIÓN CON CLIENTE NATIVO (BYPASS DE SEGURIDAD)
+        print("🤖 Generando respuesta con Gemini (Nativo)...")
+        
+        client = genai.Client(api_key=google_key)
+        
+        native_response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=rag_prompt,
+            config=types.GenerateContentConfig(
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    )
+                ]
+            )
+        )
+        
+        if native_response.text:
+            return {"messages": [AIMessage(content=native_response.text)]}
+        else:
+            raise ValueError("Respuesta vacía por filtros duros.")
+
+    except Exception as e:
+        print(f"❌ Error RAG: {e}")
+        return {"messages": [SystemMessage(content="Lo siento, hubo un error al consultar los apuntes.")]}
+    
+    
 # ==========================================
 # 4. CONSTRUCCIÓN DEL GRAFO (Workflow)
 # ==========================================

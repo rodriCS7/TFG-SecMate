@@ -11,6 +11,13 @@ env/
 __pycache__/
 *.pyc
 
+# Datos del TFG
+data/
+chroma_db/
+temp_*/
+
+
 # CLAVES SECRETAS
 .env
+__pycache__/
 *.env

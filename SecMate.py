@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 # Librerías de Telegram: Gestor de actualizaciones, filtros y contextos
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ParseMode
+
 # Librería de LangChain para encapsular mensajes hacia el grafo
 from langchain_core.messages import HumanMessage
 
@@ -51,13 +53,31 @@ async def process_with_graph(update: Update, text_input: str):
         # 4. Gestión de límites de Telegram (Splitter)
         # Telegram no permite mensajes de más de 4096 caracteres.
         max_length = 4000 
-        if len(bot_response) > max_length:
-            # Si es muy largo, lo troceamos y enviamos en partes
-            for i in range(0, len(bot_response), max_length):
-                await update.message.reply_text(bot_response[i:i+max_length])
+
+        # Si el mensaje es corto
+        if len(bot_response) <= max_length:
+            try:
+                # INTENTO A: Enviar bonito (Markdown)
+                await update.message.reply_text(
+                    bot_response, 
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                print(f"⚠️ Error de formato Markdown ({e}). Enviando plano.")
+                # INTENTO B: Enviar feo (Texto Plano) - FALLBACK
+                await update.message.reply_text(bot_response)
+
+        # Si el mensaje es muy largo (Troceado)
         else:
-            # Envío normal
-            await update.message.reply_text(bot_response)
+            for i in range(0, len(bot_response), max_length):
+                chunk = bot_response[i:i+max_length]
+                try:
+                    await update.message.reply_text(
+                        chunk, 
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    await update.message.reply_text(chunk)
             
     except Exception as e:
         print(f"❌ Error en la ejecución del Grafo: {e}")
@@ -156,7 +176,7 @@ async def process_file(update: Update, file_object):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Responde al comando /start"""
-    await update.message.reply_text('¡Hola! Soy SecMate. Envíame un texto (dudas) o un archivo (análisis de virus).')
+    await update.message.reply_text('¡Hola! Soy SecMate. Consúltame dudas sobre ciberseguridad o envíame archivos para que los analice.')
 
 # ==========================================
 # 5. PUNTO DE ENTRADA (MAIN)
@@ -173,6 +193,6 @@ if __name__ == "__main__":
     # Esto asegura que NINGÚN mensaje se pierda.
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_any_message))
     
-    print("🤖 SecMate (Modo Universal) está escuchando...")
+    print("🤖 SecMate está escuchando...")
     # Bucle infinito de escucha (Polling)
     app.run_polling()
