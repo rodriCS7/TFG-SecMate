@@ -39,18 +39,38 @@ async def process_with_graph(update: Update, text_input: str):
                     o un prompt sintético generado tras subir un archivo).
     """
     try:
-        print(f"🧠 Enviando al Grafo: '{text_input[:30]}...'")
+        # 1. Identificar al usuario (thread_id)
+        chat_id = update.effective_chat.id
+        user_name = update.effective_user.first_name
+
+        print(f"🧠 [{user_name} - {chat_id}] Enviando al Grafo: '{text_input[:30]}...'")
         
-        # 1. Encapsulamos el texto en un objeto HumanMessage de LangChain
+        # 2. Configuración de Memoria para este usuario
+        # El 'thread_id' permite al grafo mantener contexto por usuario.
+        config = {"configurable": {"thread_id": str(chat_id)}}
+
+        # 3. Encapsulamos el texto en un objeto HumanMessage de LangChain
         input_message = HumanMessage(content=text_input)
         
-        # 2. Invocamos el Grafo (El cerebro decide si va al Analista o al Consultor)
-        final_state = graph.invoke({'messages': [input_message]})
+        # 4. Invocamos el Grafo de forma asincrona para no bloquear el bot si hay muchos usuarios
+        # Le pasamos la configuración
+        final_state = await graph.ainvoke(
+            {'messages': [input_message]}, 
+            config=config
+        )
         
-        # 3. Extraemos la última respuesta generada por la IA
-        bot_response = final_state['messages'][-1].content
-        
-        # 4. Gestión de límites de Telegram (Splitter)
+        # 5. Extraemos la última respuesta generada por la IA
+        raw_response = final_state['messages'][-1].content
+
+        # --- Limpiamos la respuesta ---
+        # Si el bot responde con formato "ACCIÓN :: RAZÓN :: MENSAJE", nos quedamos solo con el MENSAJE.
+        if "::" in raw_response:
+            # Dividimos por "::" y cogemos el último trozo (-1)
+            bot_response = raw_response.split("::")[-1].strip()
+        else:
+            bot_response = raw_response
+
+        # 6. Gestión de límites de Telegram (Splitter)
         # Telegram no permite mensajes de más de 4096 caracteres.
         max_length = 4000 
 

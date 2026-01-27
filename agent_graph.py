@@ -15,6 +15,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, H
 from langchain_core.messages import SystemMessage, AIMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver # Para añadir memoria al grafo
 
 # --- MÓDULOS PROPIOS ---
 # Separación de responsabilidades: Prompts en un lado, Herramientas en otro
@@ -244,9 +245,24 @@ def consultant_node(state: State):
         # 3. Retrieval
         # Convierte la pregunta en un vector y busca los K fragmentos más cerca matemáticamente (más relevantes).
         results = vector_store.similarity_search(user_question, k=4)
-        # Variable con el contexto extraído del RAG
+        # A. Extraemos el contexto para la IA
         context_text = "\n\n".join([doc.page_content for doc in results])
+        # B. Extraemos las fuentes (metadatos) para el debugging
+        # Usamos un set() para evitar duplicados si varios trozos vienen del mismo documento
+        unique_sources = set()
+
+        for doc in results:
+            # doc.metedata es un diccionario: {'source': 'data/Tema1.pdf', 'page':10}
+            full_path = doc.metadata.get('source', 'Desconocido')
+            filename = os.path.basename(full_path) # Limpiamos la ruta
+            page = doc.metadata.get('page', '?')
+
+            # Guardamos formato "Archivo (Pág X)"
+            unique_sources.add(f"{filename} (Pág {page})")
         
+        # Imprimimos las fuentes en consola 
+        print(f"   📚 Fuentes usadas: {', '.join(unique_sources)}")
+
         if not context_text:
             return {"messages": [SystemMessage(content="Lo siento, no encuentro información sobre eso en tus apuntes.")]}
 
@@ -332,5 +348,8 @@ graph_builder.add_conditional_edges(
 graph_builder.add_edge("analyst", END)
 graph_builder.add_edge("consultant", END)
 
+# Inicializamos la memoria volátil (se borra al reiniciar el bot)
+memory = MemorySaver()
+
 # Compilación final
-graph = graph_builder.compile()
+graph = graph_builder.compile(checkpointer=memory)
