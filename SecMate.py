@@ -116,6 +116,12 @@ async def handle_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     no estándar que los filtros específicos (filters.Document) a veces ignoran.
     Esta función garantiza que el bot reaccione siempre.
     """
+
+    # --- PROTECCIÓN CONTRA CRASHEOS ---
+    # Si update.message es None (ej: Edición de mensaje), lo ignoramos
+    if not update.message:
+        return
+    
     msg = update.message
     
     # CASO A: El usuario envió un DOCUMENTO (PDF, TXT, EXE, etc.)

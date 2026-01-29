@@ -20,7 +20,7 @@ from langgraph.checkpoint.memory import MemorySaver # Para añadir memoria al gr
 # --- MÓDULOS PROPIOS ---
 # Separación de responsabilidades: Prompts en un lado, Herramientas en otro
 from prompts import ORCHESTRATOR_SYSTEM_PROMPT, ANALYST_SYSTEM_PROMPT, CONSULTANT_RAG_PROMPT
-from tools import check_hash_vt, extract_hash_from_text
+from tools import check_hash_vt, check_url_virustotal, extract_hash_from_text, extract_url_from_text
 
 # --- IMPORTS PARA RAG ---
 from langchain_chroma import Chroma
@@ -105,6 +105,8 @@ def orchestrator_node(state: State):
 def analyst_node(state: State):
     """
     NODO ANALISTA (El Especialista Técnico):
+    - Combina Inteligencia Técnica (VirusTotal) + Inteligencia Semántica (Análisis de Texto).
+    - Objetivo: Detectar ataques complejos donde la URL puede parecer limpia pero el contexto es malicioso.
     - Implementa lógica HÍBRIDA (IA + Determinista).
     - Usa el SDK Nativo de Google para saltar limitaciones de LangChain con datos de virus.
     - Incluye mecanismo de 'Graceful Degradation' (Reporte Manual) si falla la IA.
@@ -119,36 +121,52 @@ def analyst_node(state: State):
             user_text = msg.content
             break
     
-    # 2. Uso de Herramientas: Extracción de Hash y consulta a VirusTotal
+    # 2. Uso de Herramientas: Extracción de Hash o URL
     target_hash = extract_hash_from_text(user_text)
+    target_url = extract_url_from_text(user_text)
 
+    vt_data = {}
+    analysis_type = ""
+
+    # Prioridad: Si hay Hash (malware) > URL (phishing) > Solo texto
     if target_hash:
         print(f"🔍 Hash detectado: {target_hash}")
+        analysis_type = "Archivo (Malware)"
         print("🌍 Consultando VirusTotal...")
         vt_data = check_hash_vt(target_hash)
-
-        # Manejo de errores de la API externa (VirusTotal)
-        if "error" in vt_data:
-             return {"messages": [SystemMessage(content=f"⚠️ Error VirusTotal: {vt_data['error']}")]}
         
-        # 3. Ingeniería de Prompts: Inyectamos los datos JSON en el prompt
-        full_analysis_prompt = f"""
-        {ANALYST_SYSTEM_PROMPT}
-        --- DATOS TÉCNICOS DEL ANÁLISIS ---
-        {json.dumps(vt_data)}
-        """
+    elif target_url:
+        print(f"🔍 URL detectada: {target_url}")
+        analysis_type = "URL (Sitio Web)"
+        print("🌍 Consultando VirusTotal")
+        vt_data = check_url_virustotal(target_url)  
+    
+    # Manejo de errores de la API externa (VirusTotal)
+    if "error" in vt_data:
+        return {"messages": [SystemMessage(content=f"⚠️ Error VirusTotal: {vt_data['error']}")]}  
 
-        # 4. Generación de Respuesta (Lógica Robusta)
-        try:
-            print("🤖 Generando reporte con Gemini (Cliente Nativo)...")
-            
-            # BYPASS: Usamos el cliente nativo de Google directamente.
-            # Esto evita el error "contents are required" de LangChain cuando
-            # Google devuelve respuestas complejas sobre malware.
-            client = genai.Client(api_key=google_key)
-            
-            # 2. Generamos contenido usando la estructura nueva
-            native_response = client.models.generate_content(
+    # 3. Preparación del Prompt para el Analista (Promt Engineering)
+    full_analysis_prompt = f"""
+    {ANALYST_SYSTEM_PROMPT}
+
+    --- 1. EVIDENCIA CONTEXTUAL (MENSAJE DEL USUARIO) ---
+    "{user_text}"
+
+    --- 2. EVIDENCIA TÉCNICA ({analysis_type}) ---
+    Datos extraídos de VirusTotal (JSON):
+    {json.dumps(vt_data, indent=2)}
+
+    --- INSTRUCCIONES ADICIONALES ---
+    Cruza la información para dar un veredicto. Si VT dice limpio pero el texto es claramente phishing, alerta de riesgo por Ingeniería Social.
+    """
+
+    # 4. Generaración de Respuesta con Cliente Nativo (Bypass de Seguridad)
+    try:
+        print(f"🤖 Correlacionando datos ({analysis_type} + Texto) con Gemini (Nativo)...")
+        
+        client = genai.Client(api_key=google_key)
+        
+        native_response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=full_analysis_prompt,
                 config=types.GenerateContentConfig(
@@ -161,49 +179,43 @@ def analyst_node(state: State):
                     ]
                 )
             )
-            
-            # Validación: Aseguramos que hay texto antes de devolverlo
-            if native_response.text:
-                final_text = native_response.text
-            else:
-                raise ValueError("Respuesta vacía de la IA")
 
-            # Envolvemos en AIMessage para mantener compatibilidad con el Grafo
-            return {"messages": [AIMessage(content=final_text)]}
+        # Validamos que hay texto antes de devolverlo    
+        if native_response.text:
+            return {"messages": [AIMessage(content=native_response.text)]}
+        else:
+            raise ValueError("Respuesta vacía por filtros duros.")
 
-        except Exception as e:
-            # FALLBACK (Plan B): Si la IA falla (por red o filtros de seguridad duros),
-            # generamos un reporte determinista basado en los datos crudos.
-            print(f"⚠️ FALLO IA ({e}). ACTIVANDO REPORTE MANUAL.")
-            
-            malicious = vt_data.get('malicious', 0)
-            total = malicious + vt_data.get('undetected', 0) + vt_data.get('harmless', 0)
-            names = ", ".join(vt_data.get('names', ['Desconocido']))
-            
-            # Lógica simple
-            if malicious > 0:
-                verdict = "⛔ **PELIGROSO**"
-                advice = "Este archivo ha sido detectado como malware. **NO LO ABRAS.**"
-            else:
-                verdict = "✅ **SEGURO**"
-                advice = "Ningún motor antivirus ha detectado amenazas."
-
-            # Construcción del mensaje manual
-            manual_report = (
-                f"🤖 *Nota: IA no disponible (Fallback activo). Análisis forense manual:*\n\n"
-                f"🛡️ **Informe de Seguridad**\n"
-                f"-------------------------\n"
-                f"📂 **Archivo:** `{names}`\n"
-                f"⚖️ **Veredicto:** {verdict}\n"
-                f"📊 **Detecciones:** {malicious}/{total} motores\n"
-                f"🔑 **Hash:** `{target_hash}`\n\n"
-                f"💡 **Conclusión:** {advice}"
-            )
-            return {"messages": [SystemMessage(content=manual_report)]}
+    except Exception as e:
+        # 5. FALLBACK MANUAL (GRACEFUL DEGRADATION)
+        # Si la IA falla, generamos un reporte "feo" pero útil basado en los datos.
+        print(f"⚠️ FALLO IA ({e}). ACTIVANDO REPORTE MANUAL.")
         
-    else:
-        return {"messages": [SystemMessage(content="[Analista] No encontré un hash válido. Por favor, envía el hash o sube el archivo.")]}
+        malicious = vt_data.get('malicious', 0)
+        total = vt_data.get('total_engines', 0) if 'total_engines' in vt_data else (malicious + vt_data.get('undetected', 0))
+        
+        # Identificador (URL o Nombres de archivo)
+        target_id = vt_data.get('url', vt_data.get('names', ['Desconocido']))
+        if isinstance(target_id, list): target_id = target_id[0] # Si es lista de nombres, coge el primero
 
+        # Veredicto simple
+        if malicious > 0:
+            verdict = "⛔ **PELIGROSO / MALICIOSO**"
+            advice = "Detectado por motores de seguridad. NO ACCEDER."
+        else:
+            verdict = "✅ **APARENTEMENTE SEGURO**"
+            advice = "Ningún motor detectó amenazas recientes."
+
+        manual_report = (
+            f"🤖 *Nota: IA no disponible (Fallback activo). Análisis forense manual:*\n\n"
+            f"🛡️ **Informe de Seguridad ({analysis_type})**\n"
+            f"-------------------------\n"
+            f"🎯 **Objetivo:** `{target_id}`\n"
+            f"⚖️ **Veredicto:** {verdict}\n"
+            f"📊 **Detección:** {malicious}/{total} motores\n"
+            f"💡 **Consejo:** {advice}"
+        )
+        return {"messages": [SystemMessage(content=manual_report)]}
 
 def consultant_node(state: State):
     """

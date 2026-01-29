@@ -2,11 +2,17 @@ import os
 import re
 import hashlib
 import requests
+import base64
 from dotenv import load_dotenv
 
 load_dotenv('.env')
 VT_KEY = os.getenv('VT_API_KEY')
 
+if not VT_KEY:
+    print(f"⚠️ Error: Falta la API Key de VirusTotal.")
+    exit()
+
+# Para el módulo de VirusTotal
 def get_file_hash(file_path):
     """Calcula el hash SHA-256 de un archivo local."""
     sha256_hash = hashlib.sha256()
@@ -62,3 +68,88 @@ def check_hash_vt(file_hash):
     
     except Exception as e:
         return {"error": f"Error al conectar con VirusTotal: {str(e)}"}
+
+# Para el módulo de Phising
+def check_url_virustotal(url_to_scan):
+    """
+    Consulta la reputación de una URL en VirusTotal.
+    """
+    
+    try:
+        # 1. Preparar el ID de la URL codificada en base64 sin padding (requisito de VT)
+        # Codificamos la URL y quitamos los '=' del final
+        url_id = base64.urlsafe_b64encode(url_to_scan.encode()).decode().strip('=')
+
+        headers = {
+            "accept": "application/json",
+            "x-apikey": VT_KEY
+        }
+
+        # 2. Consultar el reporte (Endpoint: /urls/{id})
+        enpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
+        response = requests.get(enpoint, headers=headers)
+
+        if response.status_code == 200:
+            data = response.json()
+            attributes = data['data']['attributes']
+            stats = attributes['last_analysis_stats']
+            
+            malicious = stats['malicious']
+            suspicious = stats['suspicious']
+            total_engines = sum(stats.values())
+            
+            # Devolvemos un resumen estructurado
+            return {
+                "url": url_to_scan,
+                "malicious": stats['malicious'],
+                "suspicious": stats['suspicious'],
+                "harmless": stats['harmless'],
+                "undetected": stats['undetected'],
+                "total_engines": sum(stats.values()),
+                "title": attributes.get('title', 'Sin título'),
+                "reputation": attributes.get('reputation', 0),
+                "categories": attributes.get('categories', {})
+            }
+        
+        elif response.status_code == 404:
+            return f"ℹ️ VirusTotal no tiene información previa sobre esta URL ({url_to_scan}). Podría ser nueva o muy específica."
+        
+        else:
+            return f"⚠️ Error al conectar con VirusTotal (Código: {response.status_code})"
+
+    except Exception as e:
+        return f"⚠️ Error interno analizando URL: {str(e)}"
+    
+
+def extract_url_from_text(text):
+    """
+    Extrae la primera URL encontrada en un texto.
+    Soporta:
+    - Protocolos: http://, https://
+    - Subdominios comunes: www.
+    - Dominios: ejemplo.com, sitio.org
+    """
+
+    url_pattern = r"\b((?:https?://|www\.|[a-zA-Z0-9-]+\.[a-z]{2,})\S+)\b"
+    
+    match = re.search(url_pattern, text, re.IGNORECASE)
+    
+    if match:
+        url = match.group(0)
+        
+        # FILTRO ANTI-FALSOS POSITIVOS
+        # Evita que detecte nombres de archivos comunes como URLs (ej: reporte.pdf)
+        # Si termina en una extensión de archivo típica y no tiene http/www, lo ignoramos.
+        excluded_extensions = ('.pdf', '.jpg', '.png', '.exe', '.docx', '.txt', '.py')
+        if url.lower().endswith(excluded_extensions) and not url.startswith(('http', 'www')):
+            return None
+
+        # NORMALIZACIÓN
+        # Si detectamos "google.com" o "www.google.com", le añadimos "http://"
+        # VirusTotal necesita el protocolo para procesarlo correctamente.
+        if not url.startswith(('http://', 'https://')):
+            url = 'http://' + url
+            
+        return url.strip()
+        
+    return None
