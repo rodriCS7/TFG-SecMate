@@ -7,6 +7,9 @@ env/
 .idea/
 .vscode/
 
+# Códigos apoyo (consulta modelos)
+check_models.py
+
 # Archivos compilados de Python
 __pycache__/
 *.pyc

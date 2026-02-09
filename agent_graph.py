@@ -1,7 +1,7 @@
 import os
 import json
 from dotenv import load_dotenv
-from typing import Annotated
+from typing import Annotated, Optional
 from typing_extensions import TypedDict
 
 # --- LIBRERÍAS DE GOOGLE (NATIVO) ---
@@ -24,7 +24,7 @@ from tools import check_hash_vt, check_url_virustotal, extract_hash_from_text, e
 
 # --- IMPORTS PARA RAG ---
 from langchain_chroma import Chroma
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -57,9 +57,19 @@ llm = ChatGoogleGenerativeAI(
 
 
 # Definición del Estado del Grafo (La "Memoria" del Bot)
-# A mejorar: maneras más eficientes de manejar el historial.
 class State(TypedDict):
-    messages: Annotated[list, add_messages] # append-only para mantener historial
+    # 1. Historial de chat (Append-only: Los mensajes nuevos se añaden al final)
+    messages: Annotated[list, add_messages] 
+    
+    # 2. Contexto de Amenaza (Overwrite: Se sobrescribe con cada análisis nuevo)
+    # Aquí guardaremos "Phishing", "Ransomware", etc.
+    active_threat: Optional[str]
+    
+    # 3. Pregunta Refinada (Overwrite: Pasa del Orquestador al Consultor)
+    # Si el usuario dice "Sí", aquí guardaremos "¿Qué es un Ransomware?"
+    refined_query: Optional[str]
+
+    next_step: Optional[str] # Variable temporal para el router condicional (no se guarda en memoria, solo para lógica de flujo)
 
 # ==========================================
 # 2. FUNCIONES AUXILIARES (UTILITIES)
@@ -86,20 +96,53 @@ def clean_response_text(ai_message):
 def orchestrator_node(state: State):
     """
     NODO ORQUESTADOR (El Cerebro):
-    - Recibe el input del usuario.
+    - Recibe el input del usuario y/o lee el estado (active_threat).
     - Decide a qué especialista enviar la tarea (Analista, Consultor o Chat).
     - Usa LangChain para invocar al modelo.
+    - Si es flujo dinámico, Reescribe la pregunta del usuario para el Consultor (Ingeniería de Prompts).
     """
-    # Inyectamos el System Prompt al principio del contexto
-    messages = [SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT)] + state['messages']
+
+    print("--- 🧠 EJECUTANDO ORQUESTADOR ---")
+
+    # 1. Recuperar contexto de la memoria
+    # Si no hay amenaza activa, usamos "Ninguna" por defecto
+    active_threat = state.get("active_threat") or "Ninguna"
+
+    # 2. Inyectar contexto en el Prompt del Orquestador (Prompt Engineering)
+    # Usamos .format() para rellenar la variable {active_threat}
+    filled_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(active_threat=active_threat)
     
-    # Invocamos a la IA
+    # Construimos la lista de mensajes para el LLM
+    # Mantenemos el historial para que entienda "Explícame ESO"
+    messages = [SystemMessage(content=filled_prompt)] + state['messages']
+    
+    # 3. Invocamos a la IA
     response = llm.invoke(messages)
+    ai_message_object = clean_response_text(response) # Funcion de limpieza
+    content_text = ai_message_object.content # Extraemos el texto limpio para el parsing posterior
     
-    # Limpiamos la respuesta por si viene con formato incorrecto (lista)
-    response = clean_response_text(response)
     
-    return {"messages": [response]}
+    # 4. Parsing de la respueta (formato: DESTINO :: CONTENIDO)
+    if "::" in content_text:
+        parts = content_text.split("::", 1)
+        decision = parts[0].strip()
+        refined_content = parts[1].strip()
+    else:
+        # Si el formato no es correcto, asumimos que es una respuesta de Chat general
+        decision = "TO_CHAT"
+        refined_content = content_text.strip()
+    
+    print(f"   🚦 Decisión: {decision}")
+
+    # 5. Retorno de estado
+    # Si la decision es TO_CONSULTANT, guardamos la 'refined_content' en 'refined_query'
+    # para que el Consultor sepa qué buscar
+    
+    return {
+        "messages": [AIMessage(content=refined_content)], # Guardamos lo que pensó el orquestador (opcional, para debug)
+        "next_step": decision, # Variable temporal para el router condicional
+        "refined_query": refined_content if decision == "TO_CONSULTANT" else None
+    }
 
 
 def analyst_node(state: State):
@@ -126,7 +169,10 @@ def analyst_node(state: State):
     target_url = extract_url_from_text(user_text)
 
     vt_data = {}
-    analysis_type = ""
+    analysis_type = "Ingeniería Social y estafas Online" # Valor por defecto si no se detecta ni hash ni URL
+
+    # Lógica de clasificación para el flujo dinámico
+    detected_topic = "Ciberseguridad General"
 
     # Prioridad: Si hay Hash (malware) > URL (phishing) > Solo texto
     if target_hash:
@@ -134,10 +180,34 @@ def analyst_node(state: State):
         analysis_type = "Archivo (Malware)"
         print("🌍 Consultando VirusTotal...")
         vt_data = check_hash_vt(target_hash)
+
+        # --- LÓGICA DE DETECCIÓN ESPECÍFICA ---
+        # 1. Intentamos sacar el nombre exacto (ej: trojan.emotet)
+        threat_label = vt_data.get('popular_threat_classification', {}).get('suggested_threat_label')
+        
+        # 2. Intentamos sacar tags interesantes (ej: rat, ransomware)
+        tags = vt_data.get('tags', [])
+        
+        # Lógica de nombramiento
+        if threat_label:
+            detected_topic = f"Malware de tipo {threat_label}"
+        elif "ransomware" in tags:
+            detected_topic = "Ransomware (Secuestro de datos)"
+        elif "rat" in tags:
+            detected_topic = "Malware RAT (Acceso Remoto)"
+        elif "trojan" in tags:
+            detected_topic = "Troyano"
+        elif "phishing" in tags:
+            detected_topic = "Phishing"
+        else:
+            detected_topic = "Malware y archivos infectados" # Fallback genérico
+            
+        print(f"🎯 Tema identificado: {detected_topic}")
         
     elif target_url:
         print(f"🔍 URL detectada: {target_url}")
         analysis_type = "URL (Sitio Web)"
+        detected_topic = "Phishing y Sitios Web maliciosos"
         print("🌍 Consultando VirusTotal")
         vt_data = check_url_virustotal(target_url)  
     
@@ -155,6 +225,12 @@ def analyst_node(state: State):
         REPORT_VT (Tipo: {analysis_type}):
         {json.dumps(vt_data, indent=2)}
         """
+
+    # Aparece al final del mensaje para guiar al usuario
+    call_to_action = (
+        f"\n\n🎓 *¿Quieres aprender más?*\n"
+        f"Simplemente dime *'Explícame qué es esto'* o *'¿Cómo funciona?'* y te daré más información sobre {detected_topic}."
+    )
 
     # 4. Generaración de Respuesta con Cliente Nativo (Bypass de Seguridad)
     try:
@@ -178,7 +254,12 @@ def analyst_node(state: State):
 
         # Validamos que hay texto antes de devolverlo    
         if native_response.text:
-            return {"messages": [AIMessage(content=native_response.text)]}
+            return {
+                # Añadimos el Call to Action al mensaje final
+                "messages": [AIMessage(content=native_response.text + call_to_action)],
+                # Guardamos el topic en la memoria del grafo para el orquestador
+                "active_threat": detected_topic
+            }
         else:
             raise ValueError("Respuesta vacía por filtros duros.")
 
@@ -211,7 +292,7 @@ def analyst_node(state: State):
             f"📊 **Detección:** {malicious}/{total} motores\n"
             f"💡 **Consejo:** {advice}"
         )
-        return {"messages": [SystemMessage(content=manual_report)]}
+        return {"messages": [SystemMessage(content=manual_report + call_to_action)], "active_threat": detected_topic}
 
 def consultant_node(state: State):
     """
@@ -225,12 +306,17 @@ def consultant_node(state: State):
     # El grafo de LangGraph pasa un objeto state que contiene todo el historial del chat. 
     # El código recorre los mensajes de atrás hacia adelante (reversed) para encontrar 
     # la última pregunta que hizo el usuario.
-    messages = state['messages']
-    user_question = ""
-    for msg in reversed(messages):
-        if msg.type == "human":
-            user_question = msg.content
-            break
+    
+    if state.get("refined_query"):
+        user_question = state["refined_query"]
+        print(f"   ❓ Pregunta detectada por contexto: {user_question}")
+    else:    
+        messages = state['messages']
+        user_question = ""
+        for msg in reversed(messages):
+            if msg.type == "human":
+                user_question = msg.content
+                break
             
     print(f"   ❓ Pregunta detectada: {user_question}")
 
@@ -240,11 +326,8 @@ def consultant_node(state: State):
     if not os.path.exists(DB_PATH):
         return {"messages": [SystemMessage(content="⚠️ Error: No encuentro la memoria. Ejecuta 'python ingest.py' primero.")]}
 
-    # Embeddings
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004", 
-        google_api_key=google_key
-    )
+    # Embeddings - cambiamos a HuggingFaceEmbeddings para evitar problemas de cuota con Google en la capa gratuita
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     
     try:
         # Conexión a la BBDD vectorial
@@ -252,7 +335,7 @@ def consultant_node(state: State):
         
         # 3. Retrieval
         # Convierte la pregunta en un vector y busca los K fragmentos más cerca matemáticamente (más relevantes).
-        results = vector_store.similarity_search(user_question, k=4)
+        results = vector_store.similarity_search(user_question, k=15)
         # A. Extraemos el contexto para la IA
         context_text = "\n\n".join([doc.page_content for doc in results])
         # B. Extraemos las fuentes (metadatos) para el debugging
@@ -328,11 +411,17 @@ def router(state: State):
     ROUTER (Semáforo):
     Lee la decisión del Orquestador y dirige el flujo al nodo correspondiente.
     """
-    last_message = state['messages'][-1].content
-    
-    if "TO_ANALYST" in last_message: return "analyst"
-    elif "TO_CONSULTANT" in last_message: return "consultant"
-    else: return END
+    decision = state.get("next_step")
+
+    if decision == "TO_ANALYST":
+        return "analyst"
+    elif decision == "TO_CONSULTANT":
+        return "consultant"
+    elif decision == "TO_CHAT":
+        return END
+    else:
+        return END
+
 
 # Definición de la estructura del grafo
 graph_builder = StateGraph(State)
