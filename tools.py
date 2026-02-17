@@ -11,7 +11,7 @@ load_dotenv('.env')
 VT_KEY = os.getenv('VT_API_KEY')
 
 if not VT_KEY:
-    print(f"⚠️ Error: Falta la API Key de VirusTotal.")
+    print("⚠️ Error: Falta la API Key de VirusTotal.")
     exit()
 
 # Para el módulo de VirusTotal
@@ -95,10 +95,6 @@ def check_url_virustotal(url_to_scan):
             data = response.json()
             attributes = data['data']['attributes']
             stats = attributes['last_analysis_stats']
-            
-            malicious = stats['malicious']
-            suspicious = stats['suspicious']
-            total_engines = sum(stats.values())
             
             # Devolvemos un resumen estructurado
             return {

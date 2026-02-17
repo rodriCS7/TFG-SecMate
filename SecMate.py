@@ -214,7 +214,7 @@ async def process_file(update: Update, file_object):
             os.remove(download_path)
             
         if file_hash:
-            await status_msg.edit_text(f"✅ Hash calculado.\n🕵️‍♂️ Consultando base de datos de amenazas...")
+            await status_msg.edit_text("✅ Hash calculado.\n🕵️‍♂️ Consultando base de datos de amenazas...")
             
             # 4. INYECCIÓN DE PROMPT (Prompt Injection Benigna)
             # Creamos un mensaje sintético como si el usuario hubiera escrito:
@@ -259,7 +259,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     fecha_actual = datetime.now().strftime("%d/%m/%Y")
     
     if new_cves_text:
-        print(f"   🆕 Nuevas vulnerabilidades críticas encontradas.")
+        print("   🆕 Nuevas vulnerabilidades críticas encontradas.")
         
         # 2. Formateamos el prompt 
         formatted_prompt = BOLETIN_DE_SEGURIDAD_PROMPT.format(

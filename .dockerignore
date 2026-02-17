@@ -1,0 +1,20 @@
+# --- SEGURIDAD Y SECRETOS ---
+.env
+.git
+.gitignore
+
+# --- BASURA DE PYTHON ---
+__pycache__
+*.pyc
+.venv
+.pytest_cache
+
+# --- DATOS PERSISTENTES (Se montan como volumen, no se copian) ---
+chroma_db
+data
+temp_*
+*.pdf
+
+# --- DATOS ADICIONALES ---
+*.jpg
+*.md

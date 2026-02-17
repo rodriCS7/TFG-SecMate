@@ -372,23 +372,16 @@ def consultant_node(state: State):
         client = genai.Client(api_key=google_key)
         
         native_response = client.models.generate_content(
-            model="ggemini-3-flash-preview",
+            model="gemini-3-flash-preview",
             contents=rag_prompt,
             config=types.GenerateContentConfig(
                 safety_settings=[
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    )
-                ]
+                         # Desactivar filtro de contenido peligroso
+                        types.SafetySetting(
+                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                            threshold="BLOCK_NONE"
+                        )
+                    ]
             )
         )
         
