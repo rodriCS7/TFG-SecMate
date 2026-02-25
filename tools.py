@@ -12,7 +12,6 @@ VT_KEY = os.getenv('VT_API_KEY')
 
 if not VT_KEY:
     print("⚠️ Error: Falta la API Key de VirusTotal.")
-    exit()
 
 # Para el módulo de VirusTotal
 def get_file_hash(file_path):
@@ -110,13 +109,12 @@ def check_url_virustotal(url_to_scan):
             }
         
         elif response.status_code == 404:
-            return f"ℹ️ VirusTotal no tiene información previa sobre esta URL ({url_to_scan}). Podría ser nueva o muy específica."
-        
+            return {"error": f"VirusTotal no tiene información previa sobre la URL ({url_to_scan})."}
         else:
-            return f"⚠️ Error al conectar con VirusTotal (Código: {response.status_code})"
+            return {"error": f"Error al conectar con VirusTotal (Código: {response.status_code})"}
 
     except Exception as e:
-        return f"⚠️ Error interno analizando URL: {str(e)}"
+        return {"error": f"Error interno analizando URL: {str(e)}"}
     
 
 def extract_url_from_text(text):
@@ -190,7 +188,7 @@ def get_new_critical_cves():
                         desc = d['value']
                         break
                 
-                cve_list.append(f"- **{cve_id}**: {desc[:150]}...")
+                cve_list.append(f"ID: {cve_id} | Descripcion: {desc[:150]}...")
             
             return "\n".join(cve_list)
 

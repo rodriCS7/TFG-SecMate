@@ -38,23 +38,26 @@ if not google_key:
     print("❌ Error crítico: Faltan variables de entorno (GOOGLE_API_KEY).")
     exit()
 
-# Configuración del Cliente LangChain (Principal)
+# Configuración del modelo de Google Gemini a emplear
+MODEL_NAME = "gemini-3-flash-preview"
+
+# Configuración del Cliente LangChain (Principal) / Wrapper de LangChain para el modelo de Google. 
 # Usamos 'gemini-3-flash-preview' por ser el modelo más eficiente y capaz actualmente.
 # Temperature 0.3 reduce alucinaciones.
-# BLOCK_NONE en seguridad es vital para permitir analizar malware sin bloqueos.
+# Lo usaremos principalmente para el Orquestador, que maneja texto puro y no datos técnicos sensibles. Además Langchain maneja automáticamente el historial de meoria y el ruteo del Grafo.
+# Para análisis técnicos y generación de reportes, usaremos el cliente nativo para evitar problemas de parseo y filtros de seguridad.
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3-flash-preview",
+    model=MODEL_NAME,
     google_api_key=google_key,
     temperature=0.3, 
-    safety_settings={
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-    }
 )
 
+# Instanciamos el modelo de Embeddings (Local) UNA SOLA VEZ al arrancar.
+# Esto reduce drásticamente la latencia en las consultas RAG.
+# (Usamos HuggingFaceEmbeddings para evitar problemas de cuota con Google en la capa gratuita)
+print("💾 Cargando modelo de embeddings (HuggingFace Local)...")
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")    
 
 # Definición del Estado del Grafo (La "Memoria" del Bot)
 class State(TypedDict):
@@ -213,7 +216,15 @@ def analyst_node(state: State):
     
     # Manejo de errores de la API externa (VirusTotal)
     if "error" in vt_data:
-        return {"messages": [SystemMessage(content=f"⚠️ Error VirusTotal: {vt_data['error']}")]}  
+        error_msg = vt_data['error']
+        
+        # Si es un error de API real (autenticación, timeout...) -> salimos
+        if "Falta la clave" in error_msg or "conectar" in error_msg:
+            return {"messages": [SystemMessage(content=f"⚠️ Error VirusTotal: {error_msg}")]}
+        
+        # Si es un 404 (URL/Hash desconocido) -> continuamos con análisis semántico
+        # Dejamos vt_data con el mensaje de error para que la IA lo interprete
+        print(f"⚠️ VT sin datos previos: {error_msg}. Continuando con análisis semántico...")
 
     # 3. Preparación del Prompt para el Analista (Promt Engineering)
     full_analysis_prompt = f"""
@@ -239,18 +250,18 @@ def analyst_node(state: State):
         client = genai.Client(api_key=google_key)
         
         native_response = client.models.generate_content(
-                model="gemini-3-flash-preview",
-                contents=full_analysis_prompt,
-                config=types.GenerateContentConfig(
-                    safety_settings=[
-                         # Desactivar filtro de contenido peligroso
-                        types.SafetySetting(
-                            category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                            threshold="BLOCK_NONE"
-                        )
-                    ]
-                )
+            model=MODEL_NAME,
+            contents=full_analysis_prompt,
+            config=types.GenerateContentConfig(
+                safety_settings=[
+                    # Desactivar filtro de contenido peligroso
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    )
+                ]
             )
+        )
 
         # Validamos que hay texto antes de devolverlo    
         if native_response.text:
@@ -326,8 +337,7 @@ def consultant_node(state: State):
     if not os.path.exists(DB_PATH):
         return {"messages": [SystemMessage(content="⚠️ Error: No encuentro la memoria. Ejecuta 'python ingest.py' primero.")]}
 
-    # Embeddings - cambiamos a HuggingFaceEmbeddings para evitar problemas de cuota con Google en la capa gratuita
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # Embeddings HuggingFaceEmbeddings inicializados globalmente
     
     try:
         # Conexión a la BBDD vectorial
@@ -372,7 +382,7 @@ def consultant_node(state: State):
         client = genai.Client(api_key=google_key)
         
         native_response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model=MODEL_NAME,
             contents=rag_prompt,
             config=types.GenerateContentConfig(
                 safety_settings=[
@@ -421,7 +431,7 @@ def reporter_node(state: State):
         client = genai.Client(api_key=google_key)
         
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model=MODEL_NAME,
             contents=formatted_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json" # Fuerza respuesta JSON válida

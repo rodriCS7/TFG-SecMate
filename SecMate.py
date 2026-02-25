@@ -14,17 +14,19 @@ from telegram.constants import ParseMode
 # Librería de LangChain para encapsular mensajes hacia el grafo
 from langchain_core.messages import HumanMessage
 
+# El cerebro (Grafo de LangGraph)
+from agent_graph import graph      
+
 # --- IMPORTACIONES PROPIAS (Módulos del TFG) ---
-from agent_graph import graph      # El cerebro (Grafo de LangGraph)
 from tools import get_file_hash, get_new_critical_cves    # Herramienta para cálculo SHA-256 y consulta de CVEs recientes
-from prompts import BOLETIN_DE_SEGURIDAD_PROMPT
+from prompts import BOLETIN_DE_SEGURIDAD_PROMPT 
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==========================================
 
-# Cargar variables de entorno (Token) para no exponer secretos en el código
-load_dotenv('.env') 
+# Cargar variables de entorno (Tokens) para no exponer secretos en el código
+load_dotenv('.env')
 telegram_token = os.getenv('TELEGRAM_BOT_TOKEN')
 google_api_key = os.getenv('GOOGLE_API_KEY')
 
@@ -39,6 +41,9 @@ if not google_api_key:
 
 client = genai.Client(api_key=google_api_key)
 
+# Configuración del modelo de Google Gemini a emplear
+MODEL_NAME = "gemini-3-flash-preview"
+
 # ==========================================
 # 2. LÓGICA DE CONEXIÓN CON LA IA (PUENTE)
 # ==========================================
@@ -52,6 +57,7 @@ async def process_with_graph(update: Update, text_input: str):
         text_input: El texto que se enviará al grafo (puede ser mensaje del usuario 
                     o un prompt sintético generado tras subir un archivo).
     """
+
     try:
         # 1. Identificar al usuario (thread_id)
         chat_id = update.effective_chat.id
@@ -188,7 +194,12 @@ async def process_file(update: Update, file_object):
     Lógica común para descargar, analizar y limpiar archivos.
     Sigue el principio de Privacidad: Descarga -> Hash -> Borrado inmediato.
     """
-    status_msg = await update.message.reply_text("📥 Descargando archivo para análisis forense...")
+
+    # Para evitar la Race Condition en caso de que dos usuarios envien un archivo a la vez, 
+    # añadimos el ID del usuario al nombre del archivo temporal.
+    chat_id = update.effective_chat.id # Obtenemos el ID único del chat
+
+    status_msg = await update.message.reply_text("📥 Descargando archivo para análisis...")
     download_path = None
     
     try:
@@ -199,7 +210,8 @@ async def process_file(update: Update, file_object):
         file_name = getattr(file_object, 'file_name', 'archivo_imagen.jpg')
         
         # Ruta temporal en el servidor local
-        download_path = f"temp_{file_name}"
+        # AÑADIMOS EL CHAT_ID PARA EVITAR RACE CONDITIONS ENTRE USUARIOS
+        download_path = f"temp_{chat_id}_{file_name}"
         await file_info.download_to_drive(download_path)
         print(f"   💾 Archivo guardado temporalmente en: {download_path}")
         
@@ -223,7 +235,7 @@ async def process_file(update: Update, file_object):
             prompt_sintetico = f"Analiza el hash {file_hash} del archivo {file_name}"
             await process_with_graph(update, prompt_sintetico)
         else:
-            await status_msg.edit_text("❌ Error: No se pudo generar la huella digital del archivo.")
+            await status_msg.edit_text("❌ Error: No se pudo generar el hash del archivo.")
 
     except Exception as e:
         print(f"❌ Error procesando archivo: {e}")
@@ -232,9 +244,10 @@ async def process_file(update: Update, file_object):
             os.remove(download_path)
         await status_msg.edit_text("Ocurrió un error técnico al procesar el archivo.")
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Responde al comando /start"""
-    await update.message.reply_text('¡Hola! Soy SecMate. Consúltame dudas sobre ciberseguridad o envíame archivos para que los analice.')
+    await update.message.reply_text('¡Hola! Soy SecMate, tu asistente de ciberseguridad. ¿En qué puedo ayudarte hoy? Puedes enviarme archivos para su análisis o hacerme preguntas relacionadas con seguridad informática, entre otras cosas.')
 
 
 # === Sistema de alertas automáticas (NIST CVEs) ===
@@ -255,7 +268,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
     # 1. Buscamos datos crudos del NIST
     new_cves_text = get_new_critical_cves()
     
-    # Obtienes la fecha actual en formato día/mes/año (ej: 05/02/2026) para incluirla en el boletín de seguridad.
+    # Obtenemos la fecha actual en formato día/mes/año (ej: 05/02/2026) para incluirla en el boletín de seguridad.
     fecha_actual = datetime.now().strftime("%d/%m/%Y")
     
     if new_cves_text:
@@ -272,7 +285,7 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
             # Usamos .aio para llamadas asíncronas
 
             response = await client.aio.models.generate_content(
-                model='gemini-3-flash-preview',
+                model=MODEL_NAME,
                 contents=formatted_prompt,
                 config=types.GenerateContentConfig(
                     safety_settings=[
@@ -301,9 +314,17 @@ async def check_new_cves (context: ContextTypes.DEFAULT_TYPE):
                 )
 
         except Exception as e:
-            print(f"❌ Error conectando con Gemini Directo: {e}")
+            print(f"❌ Error conectando con Gemini: {e}")
     else:
         print(f"✅ Sin novedades críticas para {chat_id}.")
+        # Avisamos al usuario para que sepa que el sistema está vivo
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text="✅ Escaneo diario completado: Sin nuevas vulnerabilidades críticas en el NIST hoy."
+            )
+        except Exception as e:
+            print(f"Error enviando confirmación vacía: {e}")
 
 
 async def subscribe (update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
