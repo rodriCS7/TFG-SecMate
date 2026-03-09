@@ -43,7 +43,7 @@ if not google_api_key:
 client = genai.Client(api_key=google_api_key)
 
 # Configuración del modelo de Google Gemini a emplear
-MODEL_NAME = "gemini-3-flash-preview"
+MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')  # Permite configurar el modelo desde .env, con un valor por defecto.
 
 
 # ==========================================

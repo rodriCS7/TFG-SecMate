@@ -60,7 +60,12 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=tu_token_aqui
 GOOGLE_API_KEY=tu_api_key_aqui
 VT_API_KEY=tu_api_key_aqui
+GEMINI_MODEL=modelo_llm
 ```
+> ⚠️ `GEMINI_MODEL` solo acepta modelos de Google Gemini 
+> (gemini-2.0-flash-preview, gemini-1.5-pro, etc.). 
+> Consulta los modelos disponibles en 
+> [Google AI Studio](https://aistudio.google.com/).
 
 ### 3. Construir la base de conocimiento RAG
 ```bash
@@ -74,9 +79,14 @@ python ingest.py
 pip install -r requirements.txt
 python SecMate.py
 
-# O con Docker
+# Con Docker (recomendado)
 docker build -t secmate .
-docker run --env-file .env secmate
+
+docker run \
+  -v ./data:/app/data \
+  -v ./chroma_db:/app/chroma_db \
+  --env-file .env \
+  secmate
 ```
 
 ---
