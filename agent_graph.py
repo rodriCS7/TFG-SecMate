@@ -42,7 +42,7 @@ if not google_key:
 # Configuración del modelo de LLM a emplear con gemini-3-flash-preview por defecto
 MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview')
 
-# Configuración del Cliente LangChain (Principal) / Wrapper de LangChain para el modelo de Google. 
+# Configuración del Cliente LangChain (Principal) / Wrapper de LangChain para el modelo de Google.
 # Usamos 'gemini-3-flash-preview' por ser el modelo más eficiente y capaz actualmente.
 # Temperature 0.3 reduce alucinaciones.
 # Lo usaremos principalmente para el Orquestador, que maneja texto puro y no datos técnicos sensibles. 

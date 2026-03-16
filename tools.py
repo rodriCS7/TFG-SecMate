@@ -185,34 +185,67 @@ def get_new_critical_cves():
         pub_end_date = now.strftime('%Y-%m-%dT%H:%M:%S.000')
 
         # Filtramos por severidad CRÍTICA (CVSS >= 9.0) y por fecha de publicación
-        url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate={pub_start_date}&pubEndDate={pub_end_date}&cvssV3Severity=CRITICAL"
+        url = (
+            f"https://services.nvd.nist.gov/rest/json/cves/2.0"
+            f"?pubStartDate={pub_start_date}"
+            f"&pubEndDate={pub_end_date}"
+            f"&cvssV3Severity=CRITICAL"
+        )
 
         response = requests.get(url, timeout=10)
 
-        if response.status_code == 200:
-            data = response.json()
-            total_results = data.get('totalResults', 0)
+        if response.status_code != 200:
+            return None
 
-            if total_results == 0:
-                return None
-            
-            # Procesamos la lista
-            cve_list = []
-            for item in data.get('vulnerabilities', []):
-                cve = item['cve']
-                cve_id = cve['id']
-                # Buscamos descripción en inglés
-                desc = "Sin descripción"
-                for d in cve.get('descriptions', []):
-                    if d['lang'] == 'en':
-                        desc = d['value']
-                        break
-                
-                cve_list.append(f"ID: {cve_id} | Descripcion: {desc[:150]}...")
-            
-            return "\n".join(cve_list)
+        data = response.json()
 
-        return None
+        if data.get('totalResults', 0) == 0:
+            return None
+
+        cve_list = []
+        for item in data.get('vulnerabilities', []):
+            cve = item['cve']
+            cve_id = cve['id']
+
+            # 2. FILTRO CLIENT-SIDE: descartar CVEs sin CVSSv3
+            # La API devuelve CVEs con solo CVSSv2 aunque se pida cvssV3Severity=CRITICAL
+            metrics = cve.get('metrics', {})
+            cvss_v3_data = metrics.get('cvssMetricV31', metrics.get('cvssMetricV30', []))
+
+            # Descartamos CVEs sin CVSSv3
+            if not cvss_v3_data:
+                print(f"   ⚠️ {cve_id} descartado: sin puntuación CVSSv3.")
+                continue
+            
+            # Descartamos CVEs con CVSSv3 < 9.0 (No críticos)
+            base_score = cvss_v3_data[0]['cvssData']['baseScore']
+            if base_score < 9.0:
+                print(f"   ⚠️ {cve_id} descartado: CVSS {base_score} < 9.0.")
+                continue
+            
+            # Descartar CVEs con identificador anterior a 2024
+            # Son CVEs indexados o modificados recientemente que caen en la ventana de las 24 horas
+            cve_year = int(cve_id.split('-')[1])
+            if cve_year < datetime.now().year - 1:
+                print(f"   ⚠️ {cve_id} descartado: CVE del año {cve_year}.")
+                continue
+            
+            # 3. Extraer descripción en inglés
+            desc = "Sin descripción disponible"
+            for d in cve.get('descriptions', []):
+                if d['lang'] == 'en':
+                    desc = d['value']
+                    break
+            
+            cve_list.append(
+                f"ID: {cve_id} | CVSS: {base_score} | Descripcion: {desc[:150]}..."
+            )
+
+        # Si tras el filtrado no queda ningún CVE realmente crítico
+        if not cve_list:
+            return None
+
+        return "\n".join(cve_list)
     
     except Exception as e:
         print(f"⚠️ Error al consultar NVD: {str(e)}")
