@@ -26,6 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiamos todo el resto del proyecto (respetando el .dockerignore)
 COPY . .
 
-# 7. COMANDO DE ARRANQUE
+# 7. USUARIO SIN PRIVILEGIOS (Principio de Mínimo Privilegio)
+RUN useradd -m secmate_user
+USER secmate_user
+
+# 8. COMANDO DE ARRANQUE
 # Ejecutamos el bot
 CMD ["python", "SecMate.py"]
