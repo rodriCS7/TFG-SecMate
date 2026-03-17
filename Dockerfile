@@ -1,5 +1,5 @@
 # 1. IMAGEN BASE
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # 2. VARIABLES DE ENTORNO DE PYTHON
 # PYTHONDONTWRITEBYTECODE=1 --> Evita generar archivos .pyc (basura)
