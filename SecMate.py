@@ -1,5 +1,7 @@
 import os
 import tempfile
+from turtle import fd
+import anyio
 import subprocess
 from dotenv import load_dotenv
 from datetime import datetime
@@ -244,13 +246,16 @@ async def process_file(update: Update, file_object):
         # Ruta temporal en el servidor local
         # AÑADIMOS EL CHAT_ID PARA EVITAR RACE CONDITIONS ENTRE USUARIOS
         
-        with tempfile.NamedTemporaryFile(
-            prefix=f"temp_{chat_id}_",
-            suffix=f"_{file_name}",
-            delete=False
-        ) as tmp:
-            download_path = tmp.name
-            
+        fd, download_path = await anyio.to_thread.run_sync(
+            lambda: tempfile.mkstemp(
+                prefix=f"temp_{chat_id}_",
+                suffix=f"_{file_name}"
+            )
+        )
+        
+        # Cerramos el descriptor de fichero, solo necesitamos la ruta
+        await anyio.to_thread.run_sync(lambda: os.close(fd))
+
         await file_info.download_to_drive(download_path)
         print(f"   💾 Archivo guardado temporalmente en: {download_path}")
         
